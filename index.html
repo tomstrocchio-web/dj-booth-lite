@@ -4380,7 +4380,7 @@ window.SoundTouchJS = { AbstractFifoSamplePipe, PitchShifter, RateTransposer, Si
         }).join('');
       }
     }
-    updateMidiHotCueLeds(ch);
+    scheduleMidiHotCueLedRefresh(ch);
   }
   function setupPadGrid(ch){
     const grid = document.getElementById('padGrid'+ch);
@@ -4421,6 +4421,7 @@ window.SoundTouchJS = { AbstractFifoSamplePipe, PitchShifter, RateTransposer, Si
     }
     renderHotCuePads(ch);
     drawWaveform(ch);
+    scheduleMidiHotCueLedRefresh(ch);
   }
   function clearHotCueSlot(ch, slot){
     const s = state[ch];
@@ -4431,6 +4432,7 @@ window.SoundTouchJS = { AbstractFifoSamplePipe, PitchShifter, RateTransposer, Si
     saveHotCues(ch);
     renderHotCuePads(ch);
     drawWaveform(ch);
+    scheduleMidiHotCueLedRefresh(ch);
   }
   function setupPadModeToggle(ch){
     const modeButtons = Array.from(document.querySelectorAll('#padModeCue'+ch+', #padModeStem'+ch+', #padModeLoop'+ch+', #padModeFx'+ch));
@@ -5512,7 +5514,7 @@ window.SoundTouchJS = { AbstractFifoSamplePipe, PitchShifter, RateTransposer, Si
     // Real master meter - tapped from the actual combined mixed output, drawn
     // as two horizontal rows of round LED bulbs (Rane-style), lighting left to right
     const browserMasterRms = (!isProDeckActive('A') || !isProDeckActive('B')) && (state.A.playing || state.B.playing) ? rmsLevel(masterAnalyser, timeDataMaster) : 0;
-    const fracMaster = Math.min(1, rmsToFraction(Math.max(browserMasterRms, rmsA, rmsB)) * 3.0);
+    const fracMaster = rmsToFraction(Math.max(browserMasterRms, rmsA, rmsB));
     const lit = Math.round(fracMaster * MASTER_LEDS);
     [masterRow1, masterRow2].forEach(function(row){
       const leds = row.querySelectorAll('.meter-led');
@@ -6106,8 +6108,9 @@ window.SoundTouchJS = { AbstractFifoSamplePipe, PitchShifter, RateTransposer, Si
       else {
         setMidiVisualPressed(actionId, false, false);
       }
-      if(!isPress && /^pad[AB][1-8]$/.test(actionId)){
-        setTimeout(updateAllMidiHotCueLeds, 35);
+      if(/^pad(Delete)?[AB][1-8]$/.test(actionId)){
+        const m = actionId.match(/^pad(?:Delete)?([AB])([1-8])$/);
+        scheduleMidiHotCueLedRefresh(m ? m[1] : null);
       }
     } else {
       midiActionSetValue(actionId, value/127, value);
@@ -6151,6 +6154,14 @@ window.SoundTouchJS = { AbstractFifoSamplePipe, PitchShifter, RateTransposer, Si
       try{ output.send(msg); }catch(e){}
     });
   }
+  function sendHotCueLedFeedback(parsed, velocity){
+    if(!parsed || parsed.type !== 'note') return;
+    const channels = [parsed.channel];
+    if(parsed.channel <= 8) channels.push(parsed.channel + 8);
+    if(parsed.channel >= 9) channels.push(parsed.channel - 8);
+    channels.filter(function(ch, i){ return ch >= 1 && ch <= 16 && channels.indexOf(ch) === i; })
+      .forEach(function(ch){ sendMidiNoteFeedback(ch, parsed.num, velocity); });
+  }
   function hotCueLedVelocity(slot){
     // DDJ-SZ2 pads respond to note velocity for pad brightness/color.
     // Velocity 127 was white on this controller; low color values select pad colors.
@@ -6168,9 +6179,9 @@ window.SoundTouchJS = { AbstractFifoSamplePipe, PitchShifter, RateTransposer, Si
       if(!parsed || parsed.type !== 'note') continue;
       const isLit = s.padMode === 'cue' && s.hotCues[i-1] != null;
       if(isLit){
-        sendMidiNoteFeedback(parsed.channel, parsed.num, hotCueLedVelocity(i-1));
+        sendHotCueLedFeedback(parsed, hotCueLedVelocity(i-1));
       } else {
-        sendMidiNoteFeedback(parsed.channel, parsed.num, 0);
+        sendHotCueLedFeedback(parsed, 0);
       }
     }
   }
@@ -6178,12 +6189,20 @@ window.SoundTouchJS = { AbstractFifoSamplePipe, PitchShifter, RateTransposer, Si
     updateMidiHotCueLeds('A');
     updateMidiHotCueLeds('B');
   }
+  function scheduleMidiHotCueLedRefresh(ch){
+    [0, 45, 120, 260].forEach(function(delay){
+      setTimeout(function(){
+        if(ch) updateMidiHotCueLeds(ch);
+        else updateAllMidiHotCueLeds();
+      }, delay);
+    });
+  }
   function turnOffAllMidiHotCueLeds(){
     if(!midiAccessObj) return;
     ['A','B'].forEach(function(ch){
       for(let i=1; i<=8; i++){
         const parsed = parseMidiKey(midiKeyForAction('pad' + ch + i));
-        if(parsed && parsed.type === 'note') sendMidiNoteFeedback(parsed.channel, parsed.num, 0);
+        if(parsed && parsed.type === 'note') sendHotCueLedFeedback(parsed, 0);
       }
     });
   }
